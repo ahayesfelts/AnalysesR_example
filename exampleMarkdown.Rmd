@@ -1,0 +1,240 @@
+---
+title: 'MIIN Part 5: Meta-analysis'
+author: "Marissa Lee"
+date: "January 21, 2015"
+output: html_document
+---
+
+**Filename: exampleMarkdown.Rmd**  
+**This markdown file does the following tasks:**  
+
+#### Aim
+Test for correlation between CWM traits and soil N effect size values. Record the outcomes in a table. In cases where the slope coefficient significantly differs from 0, plot it.
+
+```{r globalParams, include=FALSE}
+# Set global parameters
+
+#RMarkdown caching
+knitr::opts_chunk$set(cache=TRUE)
+
+#load packages
+require(ggplot2)
+require(gridExtra)
+require(plyr)
+
+#source code to set up my custom ggplots theme
+source('CODE/mytheme.R')
+
+#source the custom functions that I'll be using later
+source('CODE/fxn_SaveFitStats.R')
+source('CODE/fxn_FitPlot.R')
+source('CODE/fxn_AddPanelTitles.R')
+
+#set default figure parameters
+figuresPath<-file.path(getwd()[1], "output") #where to put the saved plots
+fig.height<-2.5 #inches
+fig.width<- 2.5 #inches
+fig.res<-300
+
+#read-in the dataset
+dat<-read.table("DATA/DATA_SYNTHESIZED/metaDataset.txt", header=TRUE, sep="\t")
+
+#source code that defines the order that variables appear in my figures
+source('CODE/script_orderLevels.R')
+
+#use ddply to summarize the dataset structure
+summ<-ddply(dat, ~measCat+traitCat, summarize,
+                 uniqueObs = length(unique(obsID)))
+#summ
+#head(dat)
+```
+
+
+### 1. Fit a random-effects model with 1 of the continuous trait variables as a fixed effect
+
+#### A. Model syntax  
+
+res <- rma.mv(yi, vi, mods= ~Xmod, random=list(~1 | paperID, ~1 | obsID), data=dat1, subset=measCat==MEASCAT[i], slab=paste(paperID,obsID, sep=",")) where Xmod is one of the following 12 combinations: 3 plant communities: (1) InvSpInvArea_cwm, (2) NatArea_cwm, (3) CWMDiff_cwm x 4 trait types: (1) percN, (2) litterpercN, (3) cn, (4) littercn.  Where,
+
+**Plant community**
+'InvSpInvArea_cwm' is the invasive species community weighted mean trait value; 
+'NatArea_cwm' is the reference area plant community weighted mean trait value;
+'CWMDiff_cwm' is the dissimilarity between the Invaded - Reference area plant community weighted mean trait value;
+
+**Trait type**
+'percN' is leaf %N;
+'litterpercN' is litter %N;
+'cn' is leaf C:N;
+'littercn' is litter C:N;  
+
+
+#### B. The mechanics of FitPlot()  
+
+FitPlot() is a function that I made to evaluate univariate relationships between plant trait values and soil N effect sizes. For 1 plant community that you specify, this thing compares each combination of trait type (4) and soil effect measurement type (9). That means that every time I run FitPlot(), I am fitting the same model 36 times with slightly different data. 
+
+FitPlot() needs some information to work.  It needs (1) the dataset, (2) the plant community to focus on, specified by a number 1-3, (3) the name of the column that holds information about trait data quality, and (4) the number of shades of gray to use for plotting variation in trait quality.
+
+FitPlot() produces a list with the following objects:
+
+- "results" : list of model fit statistics
+- "data" : dataframe with the xy data used to fit the models and make the plots. This is just in case I need to quickly/painless look up info on an odd point
+- "figures" : ggplot objects, one for each xy comparison
+- "qual" : list of model fit statistics for an extension model I ran to evaluate the effect of trait quality... if that factor is significant then I will run into some interpretation problems
+
+```{r fitreg, include = FALSE}
+
+#run the model-fitting and plotting function
+##### THIS WILL TAKE A LITTLE TIME, BE PATIENT ##########
+
+# invasive species CWM trait values
+INVlist<-FitPlot(dat, k=1, qualColumn='InvSpInvArea_qualRank', colorN=5)
+
+# reference community CWM trait values
+NATlist<-FitPlot(dat, k=2, qualColumn='NatArea_qualRank', colorN=5)
+
+# dissimilarity in CWM trait values, invaded - reference communities
+DIFFlist<-FitPlot(dat, k=3, qualColumn='CWMDiff_qualRank', colorN=10)
+
+```
+
+
+### 2. Save the model fit results  
+
+Make tables and save them as new files in the output folder
+```{r saveTabs, include = FALSE}
+
+#save the model fitting results in tables
+INVtab<-rbind(ldply(INVlist[['results']][['percN']]),
+              ldply(INVlist[['results']][['litterpercN']]),
+              ldply(INVlist[['results']][['cn']]),
+              ldply(INVlist[['results']][['littercn']]))[,-1]
+NATtab<-rbind(ldply(NATlist[['results']][['percN']]),
+              ldply(NATlist[['results']][['litterpercN']]),
+              ldply(NATlist[['results']][['cn']]),
+              ldply(NATlist[['results']][['littercn']]))[,-1]
+DIFFtab<-rbind(ldply(DIFFlist[['results']][['percN']]),
+              ldply(DIFFlist[['results']][['litterpercN']]),
+              ldply(DIFFlist[['results']][['cn']]),
+              ldply(DIFFlist[['results']][['littercn']]))[,-1]
+
+#save those tables as new files
+newfilename<-'INVtab.txt'
+write.table(INVtab, file=paste(figuresPath,'allRegressionTables',newfilename, sep='/'), sep='\t', row.names=FALSE)
+newfilename<-'NATtab.txt'
+write.table(NATtab, file=paste(figuresPath,'allRegressionTables',newfilename, sep='/'), sep='\t', row.names=FALSE)
+newfilename<-'DIFFtab.txt'
+write.table(DIFFtab, file=paste(figuresPath,'allRegressionTables',newfilename, sep='/'), sep='\t', row.names=FALSE)
+
+```
+
+
+
+### 3. Produce all possible plots and save them  
+
+Loop through all plots (3 plant communities x 4 trait types x 9 soil N effects = 108 comparisons). Each figure has data for 1 plant community x trait type with 9 scatterplot panels for each soil N effect size  
+
+```{r plotregAll, include = FALSE}
+
+#plot notes:
+#predicted values calculated based on only the fixed effects
+#ci = 95% confidence interval on the fixed effect coefficients
+
+#add panel labels
+INVlist1<-AddPanelTitles(INVlist)
+NATlist1<-AddPanelTitles(NATlist)
+DIFFlist1<-AddPanelTitles(DIFFlist)
+
+#plot and save
+##### THIS WILL TAKE A LITTLE TIME, BE PATIENT ##########
+PLANTlist<-list(INVlist1, NATlist1, DIFFlist1)
+PLANTlabel<-c('INV','NAT','DIFF')
+xlabel.PlantText<-c('Invasive species','Reference area','Invaded - Reference area')
+xlabel.TraitText<-c('Leaf %N','Litter %N','Leaf C:N','Litter C:N')
+l<-0
+for(l in 1:length(PLANTlist)){
+  i<-0
+  for (i in 1:length(TRAIT)){
+    CURRTRAIT<-PLANTlist[[l]][[i]]
+    xlabel<- textGrob(paste(xlabel.PlantText[l],xlabel.TraitText[i], sep=", "), x=0.5,
+                      y=unit(1,'lines'))
+    
+    #open image file connection
+    newfilename<-paste(paste(PLANTlabel[l],TRAIT[i], sep="_"),'.pdf',sep="")
+    pdf(paste(figuresPath,'allRegressionPlots',newfilename, sep='/'), 
+        width = fig.width*3.5, height = fig.height*3.5)
+
+    grid.arrange(
+      textGrob('Std. Mean Diff. (Inv-Ref)', y=0.5,x=unit(1,'lines'), rot=90), # ylabel topleft
+      do.call(arrangeGrob,  CURRTRAIT),
+      textGrob(" "), #bottom left
+      xlabel, #bottom right
+      widths = unit.c(unit(2.5, "lines"), unit(1, "npc") - unit(2.5, "lines")), 
+      heights = unit.c(unit(1, "npc") - unit(2.5, "lines"), unit(2.5, "lines")), 
+      nrow=2, ncol=2
+    )
+    
+    dev.off()
+    
+  }
+}
+
+```
+
+
+### 4. Pull out the signifiant plots and make publishable figures
+
+**Invasive species traits**
+```{r plotreg_inv, include = FALSE}
+
+#identify the significant relationships
+INVtab[INVtab$pVal <0.1 & INVtab$measType %in% MEASCAT,]
+
+#plot and save
+newfilename<-"INVreg.pdf"
+pdf(paste(figuresPath,newfilename, sep='/'), width = fig.width, height = fig.height)
+INVlist[['figures']][['percN']][['soiln']] + 
+    xlab('Invasive sp. Leaf %N') + ylab('Soil N effect size')
+dev.off()
+
+```
+
+
+**Reference traits** -- No significant plots
+```{r plotreg_ref, include = FALSE}
+
+#identify significant relationships
+NATtab[NATtab$pVal <0.1 & NATtab$measType %in% MEASCAT,]
+
+```
+
+
+**Trait dissimilarity, invaded minus reference area**
+```{r plotreg_diff, include = FALSE}
+
+#identify significant relationships
+DIFFtab[DIFFtab$pVal <0.1 & DIFFtab$measType %in% MEASCAT,]
+
+#plot and save
+newfilename<-"DIFFreg.pdf"
+pdf(paste(figuresPath,newfilename, sep='/'), width = fig.width*2, height = fig.height*2)
+grid.arrange(
+
+  DIFFlist[['figures']][['litterpercN']][['toti']] + 
+    xlab('Inv.-Ref. CWM litter %N') + ylab('Total inorg. N effect size') + ggtitle('a'),
+
+  DIFFlist[['figures']][['littercn']][['toti']] + 
+    xlab('Inv.-Ref. CWM litter C:N') + ylab('Total inorg. N effect size') + ggtitle('b'),
+
+  DIFFlist[['figures']][['cn']][['nminz']] + 
+    xlab('Inv.-Ref. CWM leaf C:N') + ylab('Mineralization effect size') + ggtitle('c'),
+  
+  DIFFlist[['figures']][['cn']][['soilcn']] + 
+    xlab('Inv.-Ref. CWM leaf C:N') + ylab('Soil C:N effect size') + ggtitle('d'),
+  ncol=2
+)
+dev.off()
+
+```
+
+
+
